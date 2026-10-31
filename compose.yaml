@@ -1,0 +1,43 @@
+services:
+  gateway:
+    build: .
+    image: coderelay:local
+    restart: unless-stopped
+    environment:
+      CODERELAY_DATA_DIR: /var/lib/coderelay
+      CODERELAY_PUBLIC_URL: https://${CODERELAY_DOMAIN:?Set CODERELAY_DOMAIN in .env}
+      CODERELAY_HOST: 0.0.0.0
+    volumes:
+      - coderelay-data:/var/lib/coderelay
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    expose:
+      - '8787'
+    stop_grace_period: 15s
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      CODERELAY_DOMAIN: ${CODERELAY_DOMAIN:?Set CODERELAY_DOMAIN in .env}
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      gateway:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  coderelay-data:
+  caddy-data:
+  caddy-config:

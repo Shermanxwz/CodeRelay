@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "name": "minimax-coderelay",
+  "displayName": "CodeRelay",
+  "version": "0.1.0",
+  "description": "将授权项目连接到 CodeRelay，使用此设备已登录的 MiniMax Code 执行开发任务，查看进度并处理审批。",
+  "author": "Shermanxwz",
+  "icon": "icon.png",
+  "category": "Code",
+  "exampleQueries": ["打开 CodeRelay", "连接 CodeRelay 开发任务"],
+  "apps": [],
+  "mcpServers": [],
+  "skills": []
+}

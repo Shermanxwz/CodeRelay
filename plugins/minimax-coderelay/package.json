@@ -1,0 +1,18 @@
+{
+  "name": "minimax-coderelay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CodeRelay MiniMax Code desktop adapter",
+  "engines": {
+    "node": ">=22"
+  },
+  "mcode": {
+    "schemaVersion": 2,
+    "miniApp": "./miniapp/miniapp.json"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT"
+}
