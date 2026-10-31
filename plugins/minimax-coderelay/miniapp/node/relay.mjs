@@ -7,7 +7,6 @@ import { workspaceIdentity, validateCommands, gitEvidence, runCommand } from './
 const VERSION = '0.1.0';
 const MAX_EVENT_BYTES = 110 * 1024;
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'unknown']);
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const interactionKey = (sessionId, requestId) => `${sessionId}\n${requestId}`;
 const NOT_DISPATCHED = new Set([
   'REQUEST_CANCELLED',
@@ -133,6 +132,8 @@ export class Relay {
     this.connectedAt = null;
     this.tickTimer = null;
     this.ticking = false;
+    this.tickPromise = null;
+    this.disposePromise = null;
     this.listeners = new Set();
     this.initPromise = null;
     this.requestController = new AbortController();
@@ -140,6 +141,7 @@ export class Relay {
   }
 
   async init() {
+    if (this.disposed) throw problem('RELAY_STOPPED', 503);
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
       await this.journal.init();
@@ -351,15 +353,25 @@ export class Relay {
     this.tickTimer.unref();
   }
 
-  async tick() {
-    if (this.ticking || this.disposed) return;
+  tick() {
+    if (this.disposed) return Promise.resolve();
+    if (this.tickPromise) return this.tickPromise;
+    this.tickPromise = this.runTick().finally(() => {
+      this.tickPromise = null;
+    });
+    return this.tickPromise;
+  }
+
+  async runTick() {
     this.ticking = true;
     try {
       if (!this.gateway) return;
       if (this.active && !this.active.forcedUnknown) await this.heartbeat(this.active);
+      if (this.disposed) return;
       // Flush local receipts even when accepting new work is paused.
       for (const job of Object.values(this.journal.value.jobs)) {
         await this.flushJob(job.assignment.task.id);
+        if (this.disposed) return;
       }
       if (
         !this.active &&
@@ -373,11 +385,13 @@ export class Relay {
           {},
           { signal: this.requestController.signal },
         );
+        if (this.disposed) return;
         const response = await this.gateway.request(
           '/v1/worker/claim',
           {},
           { signal: this.requestController.signal },
         );
+        if (this.disposed) return;
         if (response.assignment)
           await this.accept(response.assignment, response.leaseSeconds || 90);
       }
@@ -404,6 +418,7 @@ export class Relay {
   }
 
   async accept(assignment, leaseSeconds) {
+    if (this.disposed) throw problem('RELAY_STOPPED', 503);
     const { task, project, leaseToken } = assignment || {};
     if (
       !task?.id ||
@@ -440,6 +455,7 @@ export class Relay {
         reconciled: false,
       };
     });
+    if (this.disposed) return;
     const live = {
       id: task.id,
       controller: new AbortController(),
@@ -482,6 +498,7 @@ export class Relay {
         this.loseLease(live, safeCode(error));
       throw error;
     }
+    if (this.disposed) return;
     if (!Number.isFinite(response.leaseExpiresAt)) throw problem('INVALID_LEASE_RESPONSE', 502);
     await this.journal.change((state) => {
       state.jobs[live.id].leaseExpiresAt = response.leaseExpiresAt;
@@ -496,6 +513,7 @@ export class Relay {
   }
 
   loseLease(live, reason) {
+    if (this.journal.closed) return;
     if (live.forcedUnknown) return;
     live.forcedUnknown = reason;
     live.controller.abort();
@@ -547,6 +565,7 @@ export class Relay {
   }
 
   onHostEvent(live, event, commandId) {
+    if (this.disposed) return;
     if (event.type === 'question.requested') return; // Send only after run resolves and answer is legal.
     live.eventsTail = (live.eventsTail || Promise.resolve())
       .then(() =>
@@ -594,6 +613,7 @@ export class Relay {
       await this.journal.change((state) => {
         state.jobs[live.id].phase = 'running';
       });
+      if (this.disposed) return;
       const prompt = [
         'You are executing a task explicitly submitted by the owner through CodeRelay.',
         'Work in the bound project. Follow its instructions and the host permission policy. Do not change CodeRelay credentials or its task journal.',
@@ -616,6 +636,7 @@ export class Relay {
       );
       for (;;) {
         await live.eventsTail;
+        if (this.disposed) return;
         if (result.pendingQuestion && !live.controller.signal.aborted) {
           const question = { sessionId: result.sessionId, ...result.pendingQuestion };
           await this.journal.change((state) => {
@@ -633,6 +654,7 @@ export class Relay {
           });
           const response = await waiting;
           live.waiter = null;
+          if (this.disposed) return;
           if (response.cancelled) {
             await this.journal.change((state) => {
               state.projects[project.id].needsRebind = true;
@@ -656,6 +678,7 @@ export class Relay {
                 onEvent: (event) => this.onHostEvent(live, event, response.commandId),
               },
             );
+            if (this.disposed) return;
             if (this.journal.value.jobs[live.id].commands[response.commandId].local) {
               await this.event(live.id, 'question.answered', {
                 sessionId: question.sessionId,
@@ -691,6 +714,7 @@ export class Relay {
       }
       live.acceptSteer = false;
       await live.eventsTail;
+      if (this.disposed) return;
       finalResult = {
         summary: String(result.text || '').slice(0, 100000),
         sessionId: result.sessionId || task.sessionId,
@@ -722,6 +746,7 @@ export class Relay {
             timeoutMs: command.timeoutMs,
             maxBytes: 32768,
           });
+          if (this.disposed) return;
           const report = { name: command.name, ...check };
           finalResult.verification.push(report);
           await this.event(live.id, 'verification.finished', report);
@@ -778,10 +803,11 @@ export class Relay {
   }
 
   async finish(live, outcome, result, error) {
-    if (live.finishing) return;
+    if (this.disposed || live.finishing) return;
     live.finishing = true;
     await this.commandTail;
     await live.eventsTail;
+    if (this.disposed) return;
     clearInterval(live.leaseTimer);
     clearTimeout(live.cancelTimer);
     if (live.forcedUnknown) {
@@ -823,12 +849,14 @@ export class Relay {
   }
 
   command(id, command, local = false) {
+    if (this.disposed) return Promise.reject(problem('RELAY_STOPPED', 503));
     const operation = this.commandTail.then(() => this.applyCommand(id, command, local));
     this.commandTail = operation.catch(() => {});
     return operation;
   }
 
   async applyCommand(id, command, local = false) {
+    if (this.disposed) throw problem('RELAY_STOPPED', 503);
     const live = this.active;
     const record = this.journal.value.jobs[id];
     if (!record) throw problem('TASK_NOT_FOUND', 404);
@@ -850,6 +878,7 @@ export class Relay {
         acknowledged: local,
       };
     });
+    if (this.disposed) return { status: 'unknown' };
     let hostCallAttempted = false;
     try {
       if (command.kind === 'cancel') {
@@ -879,6 +908,7 @@ export class Relay {
           30000,
           'AGENT_OUTCOME_UNKNOWN',
         );
+        if (this.disposed) return { status: 'unknown' };
         if (local)
           await this.event(id, 'permission.resolved', {
             sessionId: payload.sessionId,
@@ -956,6 +986,7 @@ export class Relay {
   }
 
   async receipt(id, commandId, status, message = null) {
+    if (this.disposed) return;
     await this.journal.change((state) => {
       const receipt = state.jobs[id].commands[commandId];
       receipt.status = status;
@@ -965,6 +996,7 @@ export class Relay {
   }
 
   async flushJob(id) {
+    if (this.disposed) return;
     let record = this.journal.value.jobs[id];
     if (record.reconciled || !this.gateway) return;
     const path = `/v1/worker/tasks/${encodeURIComponent(id)}`;
@@ -979,6 +1011,7 @@ export class Relay {
         },
         { signal: this.requestController.signal },
       );
+      if (this.disposed) return;
       await this.journal.change((state) => {
         state.jobs[id].commands[commandId].acknowledged = true;
       });
@@ -998,6 +1031,7 @@ export class Relay {
         { leaseToken: record.assignment.leaseToken, events: batch },
         { signal: this.requestController.signal },
       );
+      if (this.disposed) return;
       if (
         !Number.isSafeInteger(response.acknowledgedSequence) ||
         response.acknowledgedSequence < batch.at(-1).sequence ||
@@ -1022,6 +1056,7 @@ export class Relay {
         },
         { signal: this.requestController.signal },
       );
+      if (this.disposed) return;
       if (!response.task || response.task.id !== id)
         throw problem('INVALID_COMPLETE_RESPONSE', 502);
       await this.journal.change((state) => {
@@ -1055,29 +1090,73 @@ export class Relay {
     return { reconciled: true, task: response.task };
   }
 
-  async dispose() {
+  dispose() {
+    if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
     this.enabled = false;
     clearTimeout(this.tickTimer);
-    if (this.active) {
-      const live = this.active;
-      this.loseLease(live, 'PLUGIN_STOPPED_DURING_TASK');
-      clearInterval(live.leaseTimer);
-      // Write uncertainty before waiting: the host may terminate the entry process at any time.
-      await this.journal.change((state) => {
-        const job = state.jobs[live.id];
-        job.outcome = 'unknown';
-        job.phase = 'terminal';
-        job.error = 'PLUGIN_STOPPED_DURING_TASK';
-        job.result = {
-          summary: '插件停止，任务已请求取消；结果待核对。',
-          sessionId: job.assignment.task.sessionId,
-        };
-      });
-      await Promise.race([live.promise, pause(1000)]);
-    }
     this.requestController.abort();
-    await this.journal.flush();
-    this.listeners.clear();
+    this.disposePromise = this.shutdown();
+    return this.disposePromise;
+  }
+
+  async shutdown() {
+    const live = this.active;
+    if (live) {
+      const job = this.journal.value.jobs[live.id];
+      if (!TERMINAL.has(job.outcome) || job.outcome === 'unknown') {
+        this.loseLease(live, 'PLUGIN_STOPPED_DURING_TASK');
+      }
+      clearInterval(live.leaseTimer);
+      clearTimeout(live.cancelTimer);
+    }
+    try {
+      await this.initPromise;
+      if (this.journal.value) {
+        // Persist uncertainty before the Host is allowed to terminate the process.
+        // Include an assignment that was being journaled before `active` was set.
+        await this.journal.change((state) => {
+          for (const job of Object.values(state.jobs)) {
+            for (const receipt of Object.values(job.commands)) {
+              if (receipt.status === 'started') {
+                receipt.status = 'unknown';
+                receipt.message = 'PLUGIN_STOPPED_AFTER_DISPATCH';
+              }
+            }
+            if (!TERMINAL.has(job.outcome)) {
+              job.outcome = 'unknown';
+              job.phase = 'terminal';
+              job.error = 'PLUGIN_STOPPED_DURING_TASK';
+              job.result = {
+                summary: '插件停止，任务已请求取消；结果待核对。',
+                sessionId: job.assignment.task.sessionId,
+              };
+            }
+            if (job.outcome === 'unknown' && job.question) {
+              const project = state.projects[job.assignment.project.id];
+              if (project) project.needsRebind = true;
+            }
+          }
+        });
+      }
+      let deadline;
+      try {
+        // The tick can enqueue writes after any network await even when no Host
+        // task remains active. Join it, plus commands/events and Host completion.
+        await Promise.race([
+          Promise.allSettled([this.tickPromise, this.commandTail, live?.eventsTail, live?.promise]),
+          new Promise((resolve) => {
+            deadline = setTimeout(resolve, 1000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadline);
+      }
+    } finally {
+      // An unresponsive Host is bounded above. Its eventual callbacks cannot
+      // reopen the writer or mutate a journal that another process may now use.
+      await this.journal.close();
+      this.listeners.clear();
+    }
   }
 }

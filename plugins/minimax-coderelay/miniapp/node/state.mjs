@@ -10,9 +10,16 @@ export class Journal {
     this.value = null;
     this.tail = Promise.resolve();
     this.initializing = null;
+    this.closed = false;
+    this.closePromise = null;
   }
 
-  async init() {
+  init() {
+    if (this.closed) return Promise.reject(problem('JOURNAL_CLOSED', 503));
+    return this.initialize();
+  }
+
+  async initialize() {
     if (this.value) return;
     if (this.initializing) return this.initializing;
     this.initializing = (async () => {
@@ -74,8 +81,10 @@ export class Journal {
   }
 
   change(mutator) {
+    if (this.closed) return Promise.reject(problem('JOURNAL_CLOSED', 503));
     const pending = this.tail.then(async () => {
-      await this.init();
+      // Writes admitted before close must still finish in their original order.
+      await this.initialize();
       const next = structuredClone(this.value);
       const result = mutator(next);
       if (result && typeof result.then === 'function') throw new Error('ASYNC_JOURNAL_MUTATOR');
@@ -89,6 +98,18 @@ export class Journal {
 
   async flush() {
     await this.tail;
+  }
+
+  close() {
+    if (this.closePromise) return this.closePromise;
+    // Seal before draining: awaiting a tail snapshot alone lets later producers
+    // enqueue new filesystem writes after shutdown has already returned.
+    this.closed = true;
+    this.closePromise = (async () => {
+      await this.tail;
+      await this.initializing;
+    })();
+    return this.closePromise;
   }
 }
 

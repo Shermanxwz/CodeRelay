@@ -106,15 +106,20 @@ export async function start(context) {
       resolve();
     });
   });
-  let stopped = false;
-  const dispose = async () => {
-    if (stopped) return;
-    stopped = true;
+  let disposePromise;
+  const dispose = () => {
+    if (disposePromise) return disposePromise;
     context.signal.removeEventListener('abort', onAbort);
-    await relay.dispose();
-    server.closeIdleConnections();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    disposePromise = (async () => {
+      try {
+        await relay.dispose();
+      } finally {
+        server.closeIdleConnections();
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    })();
+    return disposePromise;
   };
   const onAbort = () => {
     void dispose().catch(() => context.logger.error('coderelay.shutdown_failed'));

@@ -57,7 +57,13 @@ test('real Node lifecycle binds the assigned port, serves page/API and closes wi
     body: '{}',
   });
   assert.equal(invalid.status, 415);
-  await lifecycle.dispose();
+  const stopping = lifecycle.dispose();
+  assert.equal(
+    lifecycle.dispose(),
+    stopping,
+    'Host and lifecycle callers share shutdown completion',
+  );
+  await stopping;
   await assert.rejects(fetch(`http://127.0.0.1:${port}/api/status`));
 });
 

@@ -188,6 +188,50 @@ test('journal serializes writes and persists private mode', async (t) => {
   if (process.platform !== 'win32') assert.equal((await stat(journal.path)).mode & 0o777, 0o600);
 });
 
+test('journal close drains admitted writes and permanently rejects later producers', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'coderelay-journal-close-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const journal = new Journal(directory);
+  await journal.init();
+  const entered = deferred();
+  const release = deferred();
+  const persist = journal.persist.bind(journal);
+  journal.persist = async (value) => {
+    if (value.count === 1) {
+      entered.resolve();
+      await release.promise;
+    }
+    await persist(value);
+  };
+  const first = journal.change((state) => {
+    state.count = 1;
+  });
+  const second = journal.change((state) => {
+    state.count++;
+  });
+  await entered.promise;
+  let closed = false;
+  const closing = journal.close().then(() => {
+    closed = true;
+  });
+  assert.equal(journal.closed, true);
+  await assert.rejects(
+    journal.change((state) => {
+      state.count = 99;
+    }),
+    { code: 'JOURNAL_CLOSED' },
+  );
+  assert.equal(closed, false, 'previously admitted persistence is still pending');
+  release.resolve();
+  await Promise.all([first, second, closing]);
+  assert.equal(JSON.parse(await readFile(journal.path, 'utf8')).count, 2);
+  await assert.rejects(journal.init(), { code: 'JOURNAL_CLOSED' });
+  await assert.rejects(
+    journal.change(() => {}),
+    { code: 'JOURNAL_CLOSED' },
+  );
+});
+
 test('binding uses a verified own session, rejects default directories and hashes canonical path', async (t) => {
   const { relay, context, workspace } = await fixture(t);
   const response = await relay.bind({ name: '项目', sessionId: 'session_1' });
@@ -587,6 +631,88 @@ test('reply outcome uncertainty blocks further permission decisions and is not r
   assert.equal(f.calls.reply.length, 1);
   await until(() => f.relay.journal.value.jobs.task_1.outcome === 'unknown');
   assert.equal(f.relay.journal.value.jobs.task_1.commands.uncertain_reply.status, 'unknown');
+});
+
+test('dispose drains an already running event upload before releasing the journal directory', async (t) => {
+  const entered = deferred();
+  const response = deferred();
+  const f = await fixture(t, {
+    run: async (input, options) => {
+      options.onEvent({ type: 'text.delta', sessionId: input.sessionId, text: 'finished' });
+      return { sessionId: input.sessionId, status: 'finished', text: 'done' };
+    },
+    events: async (body) => {
+      entered.resolve();
+      await response.promise;
+      return { acknowledgedSequence: body.events.at(-1).sequence };
+    },
+  });
+  await f.relay.accept(f.assignment, 90);
+  await entered.promise;
+  assert.equal(f.relay.active, null, 'the Host has finished but its upload is still active');
+  let stopped = false;
+  const disposal = f.relay.dispose();
+  assert.equal(f.relay.dispose(), disposal, 'concurrent shutdown callers share the same barrier');
+  const stopping = disposal.then(() => {
+    stopped = true;
+  });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+      stopped,
+      false,
+      'shutdown must join the in-flight tick, not a journal tail snapshot',
+    );
+  } finally {
+    response.resolve();
+    await stopping;
+    await until(() => !f.relay.ticking);
+  }
+  const before = await readFile(f.relay.journal.path, 'utf8');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await readFile(f.relay.journal.path, 'utf8'), before);
+});
+
+test('late Host events and completion cannot write or start verification after bounded shutdown', async (t) => {
+  const completion = deferred();
+  let emit;
+  let verificationCalls = 0;
+  const f = await fixture(t, {
+    run: async (_input, options) => {
+      emit = options.onEvent;
+      return completion.promise;
+    },
+    options: {
+      runCommand: async () => {
+        verificationCalls++;
+        return { exitCode: 0 };
+      },
+    },
+  });
+  await f.relay.setVerification({
+    projectId: 'project_1',
+    commands: [
+      { name: 'must not run after stop', file: 'node', args: ['--test'], timeoutMs: 1000 },
+    ],
+  });
+  f.assignment.task.runVerification = true;
+  await f.relay.accept(f.assignment, 90);
+  await until(() => typeof emit === 'function');
+  const live = f.relay.active;
+  await f.relay.dispose();
+  const before = await readFile(f.relay.journal.path, 'utf8');
+  assert.equal(JSON.parse(before).jobs.task_1.outcome, 'unknown');
+  assert.equal(f.relay.journal.closed, true);
+  emit({ type: 'text.delta', sessionId: 'session_1', text: 'late output' });
+  completion.resolve({ sessionId: 'session_1', status: 'finished', text: 'late completion' });
+  await live.promise;
+  assert.equal(verificationCalls, 0);
+  assert.equal(
+    await readFile(f.relay.journal.path, 'utf8'),
+    before,
+    'a disposed worker never rewrites its closed journal',
+  );
+  await assert.rejects(f.relay.accept(f.assignment, 90), { code: 'RELAY_STOPPED' });
 });
 
 test('real verification cancellation terminates a process and records actual signal, never exit zero', async () => {
