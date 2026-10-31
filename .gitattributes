@@ -1,0 +1,5 @@
+# Keep source and release inputs identical across operating systems.
+* text=auto eol=lf
+*.png binary
+*.zip binary
+*.gz binary
