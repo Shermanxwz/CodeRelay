@@ -1,0 +1,26 @@
+[Unit]
+Description=CodeRelay MCP gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coderelay
+Group=coderelay
+WorkingDirectory=/opt/coderelay
+Environment=NODE_ENV=production
+Environment=CODERELAY_DATA_DIR=/var/lib/coderelay
+ExecStart=/usr/bin/node /opt/coderelay/dist/src/cli.js serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/coderelay
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

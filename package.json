@@ -1,0 +1,43 @@
+{
+  "name": "coderelay-mcp",
+  "version": "0.1.0",
+  "description": "Delegate development from MCP clients to an authenticated MiniMax Code desktop agent.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0 <25 || >=26.0.0 <27"
+  },
+  "bin": {
+    "coderelay": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts plugins/minimax-coderelay/test/*.test.mjs",
+    "test:core": "node --import tsx --test tests/*.test.ts",
+    "test:plugin": "node --test plugins/minimax-coderelay/test/*.test.mjs",
+    "start": "node dist/src/cli.js serve",
+    "dev": "node --import tsx src/cli.ts serve",
+    "check": "npm run format:check && npm run typecheck && npm test && npm run build",
+    "package": "npm run build && node scripts/package.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prebuild": "node scripts/clean.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/node": "2.1.2",
+    "@modelcontextprotocol/server": "2.4.0",
+    "express": "5.3.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@types/express": "5.0.6",
+    "@types/node": "26.6.6",
+    "linkedom": "0.18.14",
+    "prettier": "3.9.10",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}

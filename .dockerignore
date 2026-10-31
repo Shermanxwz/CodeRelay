@@ -1,0 +1,10 @@
+.git
+node_modules
+dist
+release
+.coderelay
+.env
+*.sqlite*
+*.db*
+coverage
+test-results

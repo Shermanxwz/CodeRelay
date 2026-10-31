@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeRelay</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <span class="mark">C↗</span>
+        <h1>CodeRelay</h1>
+        <span class="sub">让开发任务在这台设备上执行</span>
+      </div>
+      <span id="connection-state" class="pill">正在检查</span>
+    </header>
+    <main>
+      <div id="notice" role="status" aria-live="polite"></div>
+      <section id="host-missing" class="warning" hidden>
+        请在 MiniMax Code 3.1.6 或更高版本的本地项目会话内打开本插件。普通浏览器无法调用桌面 Agent。
+      </section>
+      <section class="card">
+        <h2>设备连接</h2>
+        <p id="device-summary">输入 CodeRelay 服务地址和管理员生成的一次性配对码。</p>
+        <form id="pair-form">
+          <label
+            >服务地址<input
+              id="gateway-url"
+              type="url"
+              placeholder="https://relay.example.com"
+              required
+              autocomplete="off"
+          /></label>
+          <div class="row">
+            <label
+              >设备名称<input
+                id="device-name"
+                value="MiniMax 开发机"
+                maxlength="120"
+                required /></label
+            ><label
+              >一次性配对码<input id="pairing-code" type="password" required autocomplete="off"
+            /></label>
+          </div>
+          <button type="submit">配对设备</button>
+        </form>
+        <div class="actions">
+          <button id="connect" type="button">开始接单</button
+          ><button id="pause" class="secondary" type="button">暂停接单</button>
+        </div>
+        <p class="hint">
+          暂停接单会保留正在执行的任务。关闭插件或退出 MiniMax Code
+          会中断任务。重启后需重新点击“开始接单”。
+        </p>
+      </section>
+      <section class="card">
+        <div class="section-head">
+          <h2>项目</h2>
+          <button id="bind" type="button">绑定当前项目</button>
+        </div>
+        <label
+          >项目名称<input id="project-name" placeholder="例如 RDPsync" maxlength="120"
+        /></label>
+        <p class="hint">
+          在目标项目会话内点击绑定。CodeRelay 会创建专用工作会话，继承项目目录，不接管原有聊天。
+        </p>
+        <div id="projects" class="stack"></div>
+      </section>
+      <section class="card">
+        <div class="section-head">
+          <h2>任务与审批</h2>
+          <button id="refresh" class="secondary" type="button">刷新</button>
+        </div>
+        <p class="hint">需要授权时在此选择，或打开 MiniMax 工作会话处理。未知结果不会自动重跑。</p>
+        <div id="jobs" class="stack"><p class="empty">尚未收到任务</p></div>
+      </section>
+      <details class="card">
+        <summary>本地验证命令</summary>
+        <p>仅执行你在此配置的程序和参数；远程任务无法替换命令。验证会在项目目录运行。</p>
+        <form id="verification-form">
+          <label>项目<select id="verification-project" required></select></label>
+          <label
+            >命令列表（JSON）<textarea
+              id="verification-json"
+              rows="7"
+              spellcheck="false"
+              placeholder='[{"name":"测试","file":"node","args":["--test"],"timeoutMs":120000}]'
+            ></textarea>
+          </label>
+          <button type="submit">保存验证配置</button>
+        </form>
+        <p class="hint">
+          使用 shell:false。Windows 的 npm.cmd 无法直接执行；请使用 node.exe 加 npm-cli.js
+          的实际路径，或配置直接可执行的测试程序。命令输出会随任务回传，请勿输出凭据。
+        </p>
+      </details>
+    </main>
+    <footer>
+      实际执行：此设备的 MiniMax Code · 服务端分派任务与保存结果<br />当前版本已完成协议与本地集成测试，已登录桌面端的实机验收待完成。
+    </footer>
+  </body>
+</html>
